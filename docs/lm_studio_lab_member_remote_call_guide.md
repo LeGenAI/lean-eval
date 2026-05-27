@@ -1,10 +1,16 @@
-# 연구실 멤버 안내: Mac Studio의 Lean 모델 원격 호출하기
+# 연구실 멤버 안내: Mac Studio Lean 모델 평가 파이프라인 사용법
 
-안녕하세요. 연구실에서 같은 네트워크를 쓰고 계신 분들은 Mac Studio를 직접
-조작하지 않고도, Mac Studio에 올라가 있는 Lean 특화 모델 2개를 API로 호출하실 수
-있습니다.
+안녕하세요. 연구실에서 같은 네트워크를 쓰고 계신 분들은 Mac Studio를 직접 조작하지
+않고도, Mac Studio에 올라가 있는 Lean 특화 모델 2개를 이용해 Lean proof 평가를
+실행할 수 있습니다.
 
-여러분이 사용하실 API 주소는 아래입니다.
+평가 코드는 아래 GitHub repo로 분리해두었습니다.
+
+```text
+https://github.com/LeGenAI/lean-eval.git
+```
+
+Mac Studio의 LM Studio API 주소는 아래로 고정해서 사용해주세요.
 
 ```text
 http://192.168.0.43:1234/v1
@@ -17,14 +23,61 @@ goedel-prover-v2-8b
 bytedance-seed.bfs-prover-v2-7b
 ```
 
-모델 파일을 따로 다운로드하거나 Mac Studio에 접속해서 모델을 직접 로드하실 필요는
-없습니다. 본인 컴퓨터에서 위 API 주소로 요청만 보내시면 됩니다.
+모델 파일을 본인 컴퓨터에 다운로드하거나, Mac Studio에 접속해서 모델을 직접 로드할
+필요는 없습니다. 본인 컴퓨터에서는 평가 코드만 실행하고, 모델 generation 요청은
+Mac Studio의 LM Studio 서버로 보내는 방식입니다.
 
 ---
 
-## 1. 먼저 접속 확인하기
+## 1. 평가 repo clone 및 Python 환경 준비
 
-본인 컴퓨터에서 아래 명령을 실행해주세요.
+먼저 본인 컴퓨터에서 평가 repo를 clone합니다.
+
+```bash
+git clone https://github.com/LeGenAI/lean-eval.git
+cd lean-eval
+```
+
+Python 가상환경을 만들고 패키지를 설치합니다.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+이후 같은 터미널에서 평가를 실행해주세요. 새 터미널을 열면 다시 아래를 실행해야
+합니다.
+
+```bash
+cd lean-eval
+source .venv/bin/activate
+```
+
+---
+
+## 2. Lean / Mathlib / REPL 준비
+
+평가 파이프라인은 모델 출력만 저장하는 것이 아니라, 생성된 proof를 Lean으로 실제
+검증합니다. 따라서 Lean verifier까지 실행하려면 `elan`, `lake`가 필요합니다.
+
+처음 clone한 뒤 한 번만 아래를 실행해 Mathlib과 Lean REPL 의존성을 준비해주세요.
+
+```bash
+lake update
+lake exe cache get
+lake build
+```
+
+평가 코드는 기본적으로 `LEAN_VERIFIER=repl`을 사용합니다. 이는 매 proof마다 Lean을
+새로 띄우는 방식이 아니라, `lake exe repl`을 persistent process로 유지하며 검증하는
+방식입니다. 첫 시작은 Mathlib 로딩 때문에 느릴 수 있지만, 이후 검증은 훨씬 빠릅니다.
+
+---
+
+## 3. Mac Studio 서버 접속 확인
+
+같은 네트워크에 연결된 상태에서 아래 명령을 실행해주세요.
 
 ```bash
 curl -s http://192.168.0.43:1234/v1/models | python3 -m json.tool
@@ -37,49 +90,253 @@ goedel-prover-v2-8b
 bytedance-seed.bfs-prover-v2-7b
 ```
 
-여기서 실패하면 코드 문제가 아니라 네트워크 또는 Mac Studio 서버 상태 문제일
+여기서 실패하면 평가 코드 문제가 아니라 네트워크 또는 Mac Studio 서버 상태 문제일
 가능성이 큽니다. 이 경우 담당자에게 서버 상태 확인을 요청해주세요.
 
 ---
 
-## 2. 어떤 모델을 써야 하나요?
+## 4. 환경변수 설정
 
-| 목적 | 모델 ID | endpoint |
-|---|---|---|
-| Lean theorem statement에서 proof 전체 생성 | `goedel-prover-v2-8b` | `/v1/chat/completions` |
-| Lean proof state에서 다음 tactic 후보 생성 | `bytedance-seed.bfs-prover-v2-7b` | `/v1/completions` |
-
-간단히 말하면:
-
-- Goedel은 “전체 Lean proof를 생성하는 모델”입니다.
-- BFS는 “다음 tactic 후보를 생성하는 step prover”입니다.
-
-따라서 Goedel은 chat endpoint를 쓰고, BFS는 completions endpoint를 씁니다.
-
----
-
-## 3. 평가 코드에서 사용할 환경변수
-
-우리 평가 repo나 Python script에서 사용하실 경우, 터미널에 아래처럼 설정하시면
-됩니다.
+repo에 포함된 예시 env 파일을 사용하면 됩니다.
 
 ```bash
-export LM_STUDIO_BASE_URL=http://192.168.0.43:1234/v1
-export EVAL_PANEL=local
-
-export EVAL_GOEDEL_V2_SLUG=goedel-prover-v2-8b
-export EVAL_BFS_PROVER_SLUG=bytedance-seed.bfs-prover-v2-7b
+cp .env.example .env
+set -a
+source .env
+set +a
 ```
 
-이 설정은 본인 컴퓨터에서 모델을 로드한다는 뜻이 아닙니다. 본인 컴퓨터의 코드가
-Mac Studio의 LM Studio 서버로 요청을 보내도록 주소를 지정하는 것입니다.
+핵심 설정은 아래와 같습니다.
+
+```bash
+export EVAL_PANEL=local
+export LM_STUDIO_BASE_URL=http://192.168.0.43:1234/v1
+export EVAL_GOEDEL_V2_SLUG=goedel-prover-v2-8b
+export EVAL_BFS_PROVER_SLUG=bytedance-seed.bfs-prover-v2-7b
+export LEAN_VERIFIER=repl
+```
+
+이 설정은 본인 컴퓨터에서 모델을 로드한다는 뜻이 아닙니다. 본인 컴퓨터의 평가
+코드가 Mac Studio의 LM Studio 서버로 요청을 보내도록 지정하는 것입니다.
 
 ---
 
-## 4. Goedel-Prover 호출 예시
+## 5. 평가 방식 요약
 
-Goedel-Prover는 Lean theorem statement를 보고 proof 전체를 생성하는 모델입니다.
-OpenAI 호환 API의 `/v1/chat/completions` endpoint를 사용합니다.
+평가 단위는 `(benchmark, arm, problem_id, model)`입니다.
+
+각 row마다 모델이 Lean proof를 생성하고, evaluator가 Lean verifier로 검증합니다.
+최종 pass 여부는 모델의 self-report가 아니라 Lean 검증 결과로 결정합니다.
+
+### Goedel-Prover
+
+Goedel-Prover는 theorem statement에서 proof 전체를 생성하는 모델입니다.
+
+- endpoint: `/v1/chat/completions`
+- model: `goedel-prover-v2-8b`
+- 기본 사용: `--models Goedel-Prover-V2-8B`
+- 평가 방식: K개의 독립 attempt를 실행하고, 각 attempt에서 최대 `T_max`번 verifier
+  feedback을 반영해 refine합니다.
+
+우리 실험에서 주로 사용한 설정은 아래입니다.
+
+```text
+K=3
+T_max=2
+model_timeout=60
+lean_timeout=60
+GOEDEL_MAX_TOKENS=3072
+GOEDEL_PROMPT_STYLE=goedel_v1
+```
+
+### BFS-Prover
+
+BFS-Prover는 proof 전체를 한 번에 생성하는 모델이 아니라, Lean proof state에서 다음
+tactic 후보를 생성하는 step prover입니다.
+
+- endpoint: `/v1/completions`
+- model: `bytedance-seed.bfs-prover-v2-7b`
+- 기본 사용: `--models BFS-Prover-V2-7B`
+- 평가 방식: evaluator가 proof search tree를 관리하고, BFS 모델은 각 proof state에서
+  tactic 후보를 제안합니다. 각 tactic은 Lean으로 검증됩니다.
+
+대표 설정은 아래입니다.
+
+```text
+K=3
+S_max=6
+n_per_step=8
+bfs_tree_search=true
+bfs_tree_max_nodes=64
+model_timeout=60
+lean_timeout=60
+```
+
+---
+
+## 6. 입력 파일 형식
+
+평가 runner는 control CSV와 treatment JSONL을 받습니다.
+
+```text
+--control path/to/control.csv
+--treatment path/to/treatment.jsonl
+```
+
+각 row에는 최소한 아래 정보가 있어야 합니다.
+
+```text
+benchmark
+arm
+problem_id
+statement
+formal_statement 또는 formal_prefix
+```
+
+`formal_statement` 또는 `formal_prefix`는 Lean theorem statement입니다. evaluator는
+모델이 생성한 proof를 이 statement에 붙여 Lean으로 검증합니다. 즉, 모델이 theorem
+statement를 임의로 바꿔 pass하는 것을 방지합니다.
+
+결과를 합칠 때는 아래 key로 dedupe하는 것을 권장합니다.
+
+```text
+(benchmark, arm, problem_id, model)
+```
+
+---
+
+## 7. Goedel-Prover 평가 실행 예시
+
+아래는 miniF2F를 Goedel로 평가하는 예시입니다. 실제 파일 경로는 본인이 가진
+control/treatment 파일 위치에 맞게 바꿔주세요.
+
+```bash
+mkdir -p outputs
+
+python scripts/run_proof_evaluation.py \
+  --benchmark miniF2F \
+  --control path/to/minif2f_control.csv \
+  --treatment path/to/minif2f_treatment.jsonl \
+  --output outputs/minif2f_goedel.jsonl \
+  --summary outputs/minif2f_goedel_summary.json \
+  --models Goedel-Prover-V2-8B \
+  --K 3 \
+  --T-max 2 \
+  --n-parallel 1 \
+  --model-timeout 60 \
+  --lean-timeout 60 \
+  --max-tokens 3072 \
+  --resume
+```
+
+`--resume`는 이미 output JSONL에 기록된 `(problem_id, model)` cell을 다시 실행하지
+않도록 해줍니다. 긴 평가를 중간에 재시작할 때는 가능하면 항상 붙여주세요.
+
+---
+
+## 8. BFS-Prover 평가 실행 예시
+
+아래는 miniF2F를 BFS tree search로 평가하는 예시입니다.
+
+```bash
+mkdir -p outputs
+
+export LEAN_REPL_POOL_SIZE=4
+
+python scripts/run_proof_evaluation.py \
+  --benchmark miniF2F \
+  --control path/to/minif2f_control.csv \
+  --treatment path/to/minif2f_treatment.jsonl \
+  --output outputs/minif2f_bfs.jsonl \
+  --summary outputs/minif2f_bfs_summary.json \
+  --models BFS-Prover-V2-7B \
+  --K 3 \
+  --S-max 6 \
+  --n-per-step 8 \
+  --bfs-tree-search \
+  --bfs-tree-max-nodes 64 \
+  --model-timeout 60 \
+  --lean-timeout 60 \
+  --resume
+```
+
+BFS는 Lean 검증량이 많기 때문에 `LEAN_REPL_POOL_SIZE=4`처럼 REPL pool을 늘리면
+빨라질 수 있습니다. 다만 각 REPL process가 Mathlib 환경을 따로 잡기 때문에, 메모리
+여유가 없으면 1 또는 2로 낮춰주세요.
+
+---
+
+## 9. 출력 파일 확인
+
+평가가 끝나면 두 종류의 파일이 생성됩니다.
+
+```text
+outputs/minif2f_goedel.jsonl
+outputs/minif2f_goedel_summary.json
+```
+
+JSONL은 row별 상세 기록입니다. 각 row에는 attempts, turns, Lean diagnostics,
+최종 pass 여부가 들어갑니다.
+
+summary JSON은 benchmark/model/arm별 pass rate와 bootstrap CI를 요약합니다.
+간단히 확인하려면 아래처럼 볼 수 있습니다.
+
+```bash
+python3 -m json.tool outputs/minif2f_goedel_summary.json | less
+```
+
+JSONL row 수를 확인하려면:
+
+```bash
+wc -l outputs/minif2f_goedel.jsonl
+```
+
+pass row만 빠르게 세려면:
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("outputs/minif2f_goedel.jsonl")
+rows = [json.loads(line) for line in path.open() if line.strip()]
+print("rows:", len(rows))
+print("pass:", sum(bool(r.get("pass_at_k")) for r in rows))
+PY
+```
+
+---
+
+## 10. 병렬 실행과 shard 주의사항
+
+여러 process를 동시에 실행할 수는 있지만, 같은 JSONL 파일에 여러 process가 동시에
+쓰기 시작하면 결과가 깨질 수 있습니다.
+
+병렬로 나눠 돌릴 때는 output 파일을 shard별로 분리해주세요.
+
+```text
+outputs/minif2f_goedel_front.jsonl
+outputs/minif2f_goedel_back.jsonl
+```
+
+이후 결과를 합칠 때는 아래 key로 dedupe합니다.
+
+```text
+(benchmark, arm, problem_id, model)
+```
+
+Mac Studio 서버는 여러 사람이 공유하므로 큰 batch run을 시작하기 전에는 담당자나
+다른 사용자와 충돌하지 않는지 확인해주세요.
+
+---
+
+## 11. 모델만 직접 호출해보기
+
+평가 파이프라인과 별개로 API 연결만 확인하고 싶다면 아래 예시를 사용할 수 있습니다.
+
+### Goedel-Prover 직접 호출
+
+Goedel은 `/v1/chat/completions`를 사용합니다.
 
 ```bash
 curl http://192.168.0.43:1234/v1/chat/completions \
@@ -95,21 +352,9 @@ curl http://192.168.0.43:1234/v1/chat/completions \
   }'
 ```
 
-주의하실 점:
+### BFS-Prover 직접 호출
 
-- Goedel 출력에는 proof plan이나 설명이 같이 섞일 수 있습니다.
-- 모델 출력은 Lean 검증 전까지 정답으로 보면 안 됩니다.
-- 평가 pipeline에서는 fenced Lean code만 추출하고, 원래 theorem statement에 proof
-  body를 붙인 뒤 Lean으로 다시 검증합니다.
-
----
-
-## 5. BFS-Prover 호출 예시
-
-BFS-Prover는 proof 전체를 한 번에 생성하는 모델이 아닙니다. Lean proof state를 보고
-다음 tactic 후보를 생성하는 tactic-step 모델입니다.
-
-따라서 `/v1/chat/completions`가 아니라 `/v1/completions`를 사용합니다.
+BFS는 `/v1/completions`를 사용합니다.
 
 ```bash
 curl http://192.168.0.43:1234/v1/completions \
@@ -123,90 +368,12 @@ curl http://192.168.0.43:1234/v1/completions \
   }'
 ```
 
-주의하실 점:
-
-- BFS의 raw output은 보통 tactic 후보일 뿐입니다.
-- 실제 성공 여부는 그 tactic을 Lean proof에 넣고 Lean verifier로 확인해야 합니다.
-- BFS는 보통 단독 호출보다는 search controller와 함께 쓰는 것이 맞습니다.
+직접 호출 결과는 참고용입니다. 실제 성공 여부는 반드시 Lean verifier 결과로 판단해야
+합니다.
 
 ---
 
-## 6. Python에서 호출하기
-
-OpenAI Python client를 사용하면 됩니다.
-
-```bash
-pip install openai
-```
-
-### Goedel-Prover
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://192.168.0.43:1234/v1",
-    api_key="lm-studio",
-)
-
-resp = client.chat.completions.create(
-    model="goedel-prover-v2-8b",
-    messages=[
-        {"role": "system", "content": ""},
-        {
-            "role": "user",
-            "content": "Complete the following Lean 4 code:\n\n```lean4\nimport Mathlib\n\nexample : 1 + 1 = 2 := by sorry\n```",
-        },
-    ],
-    temperature=0,
-    max_tokens=1024,
-)
-
-print(resp.choices[0].message.content)
-```
-
-### BFS-Prover
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="http://192.168.0.43:1234/v1",
-    api_key="lm-studio",
-)
-
-resp = client.completions.create(
-    model="bytedance-seed.bfs-prover-v2-7b",
-    prompt="⊢ 1 + 1 = 2:::",
-    temperature=0.7,
-    max_tokens=256,
-    stop=[":::", "\n\n"],
-)
-
-print(resp.choices[0].text)
-```
-
----
-
-## 7. 같이 사용할 때 주의사항
-
-여러 명이 같은 Mac Studio 서버를 공유하므로 아래 사항을 지켜주세요.
-
-1. 모델 ID는 그대로 사용해주세요.
-2. Goedel은 `/v1/chat/completions`로 호출해주세요.
-3. BFS는 `/v1/completions`로 호출해주세요.
-4. 모델 출력은 Lean 검증 전까지 정답으로 취급하지 말아주세요.
-5. 큰 batch run을 여러 명이 동시에 돌리면 queue가 생길 수 있습니다.
-6. Goedel은 긴 generation을 수행하므로 특히 queue가 생기기 쉽습니다.
-7. 실험 결과를 합칠 때는 아래 key로 dedupe하는 것을 권장합니다.
-
-```text
-(benchmark, arm, problem_id, model)
-```
-
----
-
-## 8. 문제가 생겼을 때
+## 12. 문제가 생겼을 때
 
 ### `/v1/models`가 응답하지 않는 경우
 
@@ -237,8 +404,20 @@ bytedance-seed.bfs-prover-v2-7b
 가능한 원인:
 
 - 다른 사람이 이미 큰 run을 돌리는 중
-- Goedel이 긴 요청을 처리하는 중
+- Goedel이 긴 generation을 처리하는 중
 - BFS search가 많은 tactic candidate를 동시에 요청하는 중
 
 이 경우 현재 큰 batch run이 돌고 있는지 확인하고, 서로 시간을 나눠 쓰는 것이
 좋습니다.
+
+### Lean REPL 시작이 실패하는 경우
+
+아래를 다시 실행해보세요.
+
+```bash
+lake update
+lake exe cache get
+lake build
+```
+
+그래도 안 되면 `elan` 설치 여부와 `lean-toolchain` 버전이 맞는지 확인해야 합니다.
