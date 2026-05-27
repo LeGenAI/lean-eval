@@ -46,12 +46,27 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+이미 clone해둔 repo가 있다면 새로 clone하지 말고 최신 코드만 받아오면 됩니다.
+
+```bash
+cd lean-eval
+git pull --ff-only
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
 이후 같은 터미널에서 평가를 실행해주세요. 새 터미널을 열면 다시 아래를 실행해야
 합니다.
 
 ```bash
 cd lean-eval
 source .venv/bin/activate
+```
+
+설치가 제대로 되었는지 빠르게 확인하려면 아래 테스트를 실행합니다.
+
+```bash
+python -m pytest tests/test_run_proof_evaluation_cli.py tests/test_multi_turn_prover.py
 ```
 
 ---
@@ -119,9 +134,61 @@ export LEAN_VERIFIER=repl
 이 설정은 본인 컴퓨터에서 모델을 로드한다는 뜻이 아닙니다. 본인 컴퓨터의 평가
 코드가 Mac Studio의 LM Studio 서버로 요청을 보내도록 지정하는 것입니다.
 
+설정이 현재 shell에 들어갔는지 확인하려면 아래처럼 확인합니다.
+
+```bash
+echo "$LM_STUDIO_BASE_URL"
+echo "$EVAL_PANEL"
+echo "$EVAL_GOEDEL_V2_SLUG"
+echo "$EVAL_BFS_PROVER_SLUG"
+```
+
 ---
 
-## 5. 평가 방식 요약
+## 5. 전체 실행 흐름
+
+실제 평가는 아래 순서로 진행하면 됩니다.
+
+1. `git pull --ff-only`로 평가 코드를 최신화합니다.
+2. `.venv`를 켜고 `pip install -e ".[dev]"`로 패키지를 최신 상태로 맞춥니다.
+3. `lake build`가 정상인지 확인합니다.
+4. `/v1/models`로 Mac Studio 서버와 모델 ID를 확인합니다.
+5. `.env`를 source합니다.
+6. 작은 cap으로 smoke test를 먼저 돌립니다.
+7. 문제가 없으면 전체 평가를 `--resume`과 함께 실행합니다.
+8. JSONL row 수와 summary JSON을 확인합니다.
+
+전체 run을 바로 시작하기 전에 1-2 row만 먼저 검증하는 것을 권장합니다.
+
+```bash
+mkdir -p outputs
+
+python scripts/run_proof_evaluation.py \
+  --benchmark miniF2F \
+  --control path/to/minif2f_control.csv \
+  --treatment path/to/minif2f_treatment.jsonl \
+  --output outputs/smoke_goedel.jsonl \
+  --summary outputs/smoke_goedel_summary.json \
+  --models Goedel-Prover-V2-8B \
+  --K 1 \
+  --T-max 1 \
+  --control-cap 1 \
+  --treatment-cap 1 \
+  --model-timeout 60 \
+  --lean-timeout 60 \
+  --max-tokens 1024 \
+  --resume
+```
+
+smoke test에서 확인할 것은 세 가지입니다.
+
+- Mac Studio 모델 호출이 되는지
+- Lean REPL verifier가 시작되는지
+- output JSONL과 summary JSON이 생성되는지
+
+---
+
+## 6. 평가 방식 요약
 
 평가 단위는 `(benchmark, arm, problem_id, model)`입니다.
 
@@ -174,7 +241,7 @@ lean_timeout=60
 
 ---
 
-## 6. 입력 파일 형식
+## 7. 입력 파일 형식
 
 평가 runner는 control CSV와 treatment JSONL을 받습니다.
 
@@ -205,7 +272,7 @@ statement를 임의로 바꿔 pass하는 것을 방지합니다.
 
 ---
 
-## 7. Goedel-Prover 평가 실행 예시
+## 8. Goedel-Prover 평가 실행 예시
 
 아래는 miniF2F를 Goedel로 평가하는 예시입니다. 실제 파일 경로는 본인이 가진
 control/treatment 파일 위치에 맞게 바꿔주세요.
@@ -232,9 +299,12 @@ python scripts/run_proof_evaluation.py \
 `--resume`는 이미 output JSONL에 기록된 `(problem_id, model)` cell을 다시 실행하지
 않도록 해줍니다. 긴 평가를 중간에 재시작할 때는 가능하면 항상 붙여주세요.
 
+ProofNet을 평가할 때는 `--benchmark ProofNet`으로 바꾸고 파일 경로만 해당 데이터로
+교체하면 됩니다.
+
 ---
 
-## 8. BFS-Prover 평가 실행 예시
+## 9. BFS-Prover 평가 실행 예시
 
 아래는 miniF2F를 BFS tree search로 평가하는 예시입니다.
 
@@ -266,7 +336,40 @@ BFS는 Lean 검증량이 많기 때문에 `LEAN_REPL_POOL_SIZE=4`처럼 REPL poo
 
 ---
 
-## 9. 출력 파일 확인
+## 10. 실행 중 진행률 확인
+
+긴 run을 돌리는 동안에는 output JSONL이 append되는지 확인하면 됩니다.
+
+```bash
+wc -l outputs/minif2f_goedel.jsonl
+tail -n 1 outputs/minif2f_goedel.jsonl | python3 -m json.tool | less
+```
+
+최근 append 시각은 아래처럼 확인할 수 있습니다.
+
+```bash
+stat -f "%Sm %N" outputs/minif2f_goedel.jsonl
+```
+
+모델 쪽이 응답 중인지 확인하려면 별도 터미널에서 `/v1/models`를 다시 확인합니다.
+
+```bash
+curl -s http://192.168.0.43:1234/v1/models | python3 -m json.tool
+```
+
+row 수가 오랫동안 늘지 않으면 다음 중 하나일 수 있습니다.
+
+- 현재 row의 model generation이 길게 걸리는 중
+- Lean verifier가 timeout을 기다리는 중
+- Mac Studio 모델 queue에 들어간 상태
+- local Lean REPL이 죽었거나 Mathlib 환경 준비가 안 된 상태
+
+이 경우 같은 output에 새 process를 바로 붙이지 말고, 기존 process가 살아있는지 먼저
+확인해주세요.
+
+---
+
+## 11. 출력 파일 확인
 
 평가가 끝나면 두 종류의 파일이 생성됩니다.
 
@@ -307,7 +410,7 @@ PY
 
 ---
 
-## 10. 병렬 실행과 shard 주의사항
+## 12. 병렬 실행과 shard 주의사항
 
 여러 process를 동시에 실행할 수는 있지만, 같은 JSONL 파일에 여러 process가 동시에
 쓰기 시작하면 결과가 깨질 수 있습니다.
@@ -328,9 +431,17 @@ outputs/minif2f_goedel_back.jsonl
 Mac Studio 서버는 여러 사람이 공유하므로 큰 batch run을 시작하기 전에는 담당자나
 다른 사용자와 충돌하지 않는지 확인해주세요.
 
+중요한 원칙은 아래입니다.
+
+- 같은 JSONL 파일에는 writer를 하나만 둡니다.
+- 병렬 실행은 shard별 JSONL을 분리합니다.
+- 중단 후 재시작할 때는 `--resume`을 사용합니다.
+- 합칠 때는 `(benchmark, arm, problem_id, model)` 기준으로 dedupe합니다.
+- 빈 candidate나 모델 호출 실패 row는 summary만 보지 말고 JSONL 상세를 확인합니다.
+
 ---
 
-## 11. 모델만 직접 호출해보기
+## 13. 모델만 직접 호출해보기
 
 평가 파이프라인과 별개로 API 연결만 확인하고 싶다면 아래 예시를 사용할 수 있습니다.
 
@@ -373,7 +484,7 @@ curl http://192.168.0.43:1234/v1/completions \
 
 ---
 
-## 12. 문제가 생겼을 때
+## 14. 문제가 생겼을 때
 
 ### `/v1/models`가 응답하지 않는 경우
 
